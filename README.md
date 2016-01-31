@@ -15,3 +15,7 @@ Yes, it is slow. I recommend you compile with at least -O2.
     $ git submodule init
     $ git submodule update
     $ make
+
+## TODO
+
+* Add parameters for width, height and tier to encoder.
