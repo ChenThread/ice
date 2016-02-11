@@ -41,6 +41,10 @@ int frameno = 0;
 int palr[256];
 int palg[256];
 int palb[256];
+int palyuv_int[256][3];
+float paly[256];
+float palu[256];
+float palv[256];
 
 // crazy internal variables
 
@@ -54,7 +58,7 @@ uint8_t exactnow = 0;
 uint32_t ccount[256];
 uint32_t corder[256];
 
-uint8_t cmatch2res[65536];
+uint8_t cmatch2res[256][256];
 
 typedef struct fillop {
 	int bx, by, bw, bh, col;
@@ -102,6 +106,42 @@ int f_sort_corder(const void *av, const void *bv)
 	return -(ccount[ai] - ccount[bi]);
 }
 
+static void rgb_to_yuv(float r, float g, float b, float *restrict y, float *restrict u, float *restrict v)
+{
+	*y = ( 0.299f * r + 0.587f * g + 0.114f * b);
+	*u = (-0.147f * r - 0.289f * g + 0.436f * b);
+	*v = ( 0.615f * r - 0.515f * g - 0.100f * b);
+}
+
+static void rgb_to_yuv_int(int r, int g, int b, int *restrict y, int *restrict u, int *restrict v)
+{
+	*y = ( 299 * r + 587 * g + 114 * b) / 100;
+	*u = (-147 * r - 289 * g + 436 * b) / 100;
+	*v = ( 615 * r - 515 * g - 100 * b) / 100;
+}
+
+static int cmatch4_int(int y1, int u1, int v1, int y2, int u2, int v2)
+{
+	//return sqrt((y2-y1) * (y2-y1) + (u2-u1) * (u2-u1) + (v2-v1) * (v2-v1));
+
+	// no complex numbers here, all happening on reals
+	// sqrt(x) < sqrt(y) && x, y >= 0 implies x < y
+	// x = z^2 implies x >= 0
+	// x + y where x, y >= 0 implies x + y >= 0
+	return ((y2-y1) * (y2-y1) + (u2-u1) * (u2-u1) + (v2-v1) * (v2-v1));
+}
+
+static float cmatch4(float y1, float u1, float v1, float y2, float u2, float v2)
+{
+	//return sqrt((y2-y1) * (y2-y1) + (u2-u1) * (u2-u1) + (v2-v1) * (v2-v1));
+
+	// no complex numbers here, all happening on reals
+	// sqrt(x) < sqrt(y) && x, y >= 0 implies x < y
+	// x = z^2 implies x >= 0
+	// x + y where x, y >= 0 implies x + y >= 0
+	return ((y2-y1) * (y2-y1) + (u2-u1) * (u2-u1) + (v2-v1) * (v2-v1));
+}
+
 static float cmatch3(int r1i, int g1i, int b1i, int r2i, int g2i, int b2i)
 {
 	float r1 = r1i / 255.0f;
@@ -111,14 +151,21 @@ static float cmatch3(int r1i, int g1i, int b1i, int r2i, int g2i, int b2i)
 	float b1 = b1i / 255.0f;
 	float b2 = b2i / 255.0f;
 
+	float y1, u1, v1;
+	float y2, u2, v2;
+	rgb_to_yuv(r1, g1, b1, &y1, &u1, &v1);
+	rgb_to_yuv(r2, g2, b2, &y2, &u2, &v2);
+
+	/*
 	float y1 = 0.299f * r1 + 0.587f * g1 + 0.114f * b1;
 	float u1 = -0.147f * r1 - 0.289f * g1 + 0.436f * b1;
 	float v1 = 0.615f * r1 - 0.515f * g1 - 0.100f * b1;
 	float y2 = 0.299f * r2 + 0.587f * g2 + 0.114f * b2;
 	float u2 = -0.147f * r2 - 0.289f * g2 + 0.436f * b2;
 	float v2 = 0.615f * r2 - 0.515f * g2 - 0.100f * b2;
+	*/
 
-	return sqrt((y2-y1) * (y2-y1) + (u2-u1) * (u2-u1) + (v2-v1) * (v2-v1));
+	return cmatch4(y1, u1, v1, y2, u2, v2);
 }
 
 static int cmatch2a(int x, int y, int c1, int c2)
@@ -142,19 +189,28 @@ static int cmatch2a(int x, int y, int c1, int c2)
 	return d < 2;
 }
 
+#if 0
+#define cmatch2(x, y, c1, c2) \
+	(exactnow > 0 ? ((c1) == (c2)) : cmatch2res[(c1)][(c2)])
+#else
 static int cmatch2(int x, int y, int c1, int c2)
 {
 	if (c1 == c2) return 1;
 	//return c1 == c2;
 	//if(agebuf[y][x] > 10) return c1 == c2;
 
-	return exactnow > 0 ? (c1 == c2) : cmatch2res[(c1 << 8) | c2];
+	return exactnow > 0 ? (c1 == c2) : cmatch2res[(c1)][(c2)];
 }
+#endif
 
+#if 1
+#define cmatch(c1, c2) ((c1) == (c2))
+#else
 static int cmatch(int c1, int c2)
 {
 	return c1 == c2;
 }
+#endif
 
 void gpu_start()
 {
@@ -171,12 +227,14 @@ void gpu_start()
 void gpu_emit()
 {
 	int i, colors_changed;
-	oplist* colorlist[256];
+#define COLORLIST_MAX (256*4)
+	static oplist colorlist[COLORLIST_MAX];
+	int colorlist_tail = 256;
 	int len[256];
 
 	for (i = 0; i < 256; i++)
 	{
-		colorlist[i] = NULL;
+		colorlist[i].valid = 0;
 		len[i] = 0;
 	}
 
@@ -186,26 +244,26 @@ void gpu_emit()
 	{
 		fillop* op = &gpuoplist[i];
 
-		if (colorlist[op->col] == NULL)
+		if (colorlist[op->col].valid == 0)
 		{
 			gpu_cchanges++;
-			colorlist[op->col] = malloc(sizeof(oplist));
-			colorlist[op->col]->valid = 0;
 		}
 
-		oplist* list = colorlist[op->col];
+		oplist* list = &colorlist[op->col];
 		while (list->valid)
 		{
 			list = list->next;
 		}
+
 		list->fillop = op;
 		list->valid = 1;
-		list->next = malloc(sizeof(oplist));
+		assert(colorlist_tail < COLORLIST_MAX);
+		list->next = &colorlist[colorlist_tail++];
 		list->next->valid = 0;
 	}
 
 	for (i = 0; i < 256; i++)
-		if (colorlist[i] != NULL)
+		if (colorlist[i].valid != 0)
 		{
 			if (fp != NULL)
 			{
@@ -213,7 +271,7 @@ void gpu_emit()
 				fputc(i, fp);
 			}
 			colors_changed++;
-			oplist* list = colorlist[i];
+			oplist* list = &colorlist[i];
 			oplist* prev = list;
 			while (list->valid)
 			{
@@ -226,7 +284,7 @@ void gpu_emit()
 					fputc(op->bw, fp);
 				}
 				list = list->next;
-				free(prev);
+				prev->valid = 0;
 				prev = list;
 			}
 		}
@@ -282,12 +340,19 @@ void gpu_fill(int bx, int by, int bw, int bh, int col)
 	gpu_cchanges++;
 }
 
+#if 1
+#define convert_age(x, y) (agebuf[(y)][(x)])
+#else
 static inline int convert_age(int x, int y)
 {
 	int v = agebuf[y][x];
 	return v;
 }
+#endif
 
+#if 1
+#define convert_age_hits(x, y) 1
+#else
 static inline int convert_age_hits(int x, int y)
 {
 	return 1;
@@ -318,6 +383,7 @@ static inline int convert_age_hits(int x, int y)
 	return diff*diff;
 	*/
 }
+#endif
 
 void algo_1(int variant)
 {
@@ -513,12 +579,12 @@ int main(int argc, const char *argv[])
 	argc = argparse_parse(&argparse, argc, argv);
 	if (infn == NULL)
 	{
-		printf("Error: Input filename not specified!\n");
+		fprintf(stderr, "Error: Input filename not specified!\n");
 		return 1;
 	}
 	if (outfn == NULL)
 	{
-		printf("Error: Output filename not specified!\n");
+		fprintf(stderr, "Error: Output filename not specified!\n");
 		return 1;
 	}
 
@@ -582,18 +648,21 @@ int main(int argc, const char *argv[])
 		palr[i] = r;
 		palg[i] = g;
 		palb[i] = b;
+		rgb_to_yuv(r, g, b, &paly[i], &palu[i], &palv[i]);
+		rgb_to_yuv_int(r, g, b, &palyuv_int[i][0], &palyuv_int[i][1], &palyuv_int[i][2]);
 	}
 	for (i = 0; i < 256; i++)
 	{
 		for(j = 0; j < 256; j++)
 		{	
 			if (j < i) {
-				cmatch2res[(j << 8) | i] = cmatch2res[(i << 8) | j];
+				cmatch2res[j][i] = cmatch2res[i][j];
 			} else {
-				cmatch2res[(j << 8) | i] = cmatch3(palr[i], palg[i], palb[i], palr[j], palg[j], palb[j]) < 0.1f; // 0.01 * 255
+				cmatch2res[j][i] = cmatch4(paly[i], palu[i], palv[i], paly[j], palu[j], palv[j]) < 0.1f*0.1f; // 0.01 * 255
+				//cmatch2res[j][i] = cmatch3(palr[i], palg[i], palb[i], palr[j], palg[j], palb[j]) < 0.1f*0.1f; // 0.01 * 255
 			}
-			/*if (cmatch2res[(j << 8) | i] == 0) {
-				printf("%d %d %d %f : %d\n", i, j, cmatch2res[(j << 8) | i],
+			/*if (cmatch2res[j][i] == 0) {
+				printf("%d %d %d %f : %d\n", i, j, cmatch2res[j][i],
 				cmatch3(palr[i], palg[i], palb[i], palr[j], palg[j], palb[j]), cmatch2a(0, 0, i, j)
 );
 			}*/
@@ -617,19 +686,22 @@ int main(int argc, const char *argv[])
 			int g = rawinbuf[y][x][1];
 			int b = rawinbuf[y][x][2];
 			int cc, r2, g2, b2;
-			int cmin = 0;
-			float dmin = 1000000.0f;
-			float d;
 
+			int yi, ui, vi;
+			rgb_to_yuv_int(r, g, b, &yi, &ui, &vi);
+			int cmin = 0;
+			int dmin = 0x7FFFFFFF;
+			int d;
 			for (cc = 0; cc < 256; cc++)
 			{
-				d = cmatch3(r, g, b, palr[cc], palg[cc], palb[cc]);
+				d = cmatch4_int(yi, ui, vi, palyuv_int[cc][0], palyuv_int[cc][1], palyuv_int[cc][2]);
 				if (d < dmin) {
 					cmin = cc;
 					dmin = d;
 				}
 			}
 			inbuf[y][x] = cmin;
+
 			/*
 			r *=   5; g *=   7; b *=   4;
 			r += 128; g += 128; b += 128;
