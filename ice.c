@@ -106,14 +106,14 @@ int f_sort_corder(const void *av, const void *bv)
 	return -(ccount[ai] - ccount[bi]);
 }
 
-static void rgb_to_yuv(float r, float g, float b, float *restrict y, float *restrict u, float *restrict v)
+static void rgb_to_yuv(float r, float g, float b, float *__restrict y, float *__restrict u, float *__restrict v)
 {
 	*y = ( 0.299f * r + 0.587f * g + 0.114f * b);
 	*u = (-0.147f * r - 0.289f * g + 0.436f * b);
 	*v = ( 0.615f * r - 0.515f * g - 0.100f * b);
 }
 
-static void rgb_to_yuv_int(int r, int g, int b, int *restrict y, int *restrict u, int *restrict v)
+static void rgb_to_yuv_int(int r, int g, int b, int *__restrict y, int *__restrict u, int *__restrict v)
 {
 	*y = ( 299 * r + 587 * g + 114 * b) / 100;
 	*u = (-147 * r - 289 * g + 436 * b) / 100;
@@ -214,7 +214,9 @@ static int cmatch(int c1, int c2)
 
 void gpu_start()
 {
-	for (int i = 0; i < 256; i++) {
+	int i;
+
+	for (i = 0; i < 256; i++) {
 		gpu_cu[i] = 0;
 	}
 	gpu_budget = 0;
